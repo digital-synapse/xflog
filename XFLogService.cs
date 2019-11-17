@@ -18,17 +18,19 @@ namespace XFLog
         void IdentityUser(string userUID);
         void Log(Exception ex, Dictionary<string, string> properties = null, SeverityType severity = SeverityType.Error);
         void Log(string tag, string message, string messageDetails = null, Dictionary<string, string> properties = null, SeverityType severity = SeverityType.Info);
-        void Register(bool autoGenerateIdentity = true, int syncFrequencyMillis = 10000, string syncEndpointUrl = null);
+        void Register(bool autoGenerateIdentity = true, int syncFrequencyMillis = 10000, string syncEndpointUrl = null, int maximumLogCount = 300);
     }
 
     public class XFLogService : IXFLogService
     {
         // default endpoint to post logs to
         private const string SYNC_ENDPOINT_URL = null;
-        
+
         // default frequency at which logs are sent
         private const int SYNC_FREQUENCY_MILLIS = 10000; // 10 seconds
 
+        // maximum number of logs stored locally before truncation occurs
+        private const int MAX_LOG_COUNT = 300;
 
         #region global exception handler
         /// <summary>
@@ -36,7 +38,11 @@ namespace XFLog
         /// For Android: This should be called from MainActivity.OnCreate()
         /// For iOS: This should be called from AppDelegate.FinishedLaunching()
         /// </summary>
-        public void Register(bool autoGenerateIdentity = true, int syncFrequencyMillis = SYNC_FREQUENCY_MILLIS, string syncEndpointUrl = SYNC_ENDPOINT_URL)
+        public void Register(
+            bool autoGenerateIdentity = true, 
+            int syncFrequencyMillis = SYNC_FREQUENCY_MILLIS, 
+            string syncEndpointUrl = SYNC_ENDPOINT_URL,
+            int maximumLogCount = MAX_LOG_COUNT)
         {
             if (_instance != null) throw new Exception(nameof(XFLogService) + " can only be registered once!");
 
@@ -45,6 +51,7 @@ namespace XFLog
             AppDomain.CurrentDomain.UnhandledException += CurrentDomainOnUnhandledException;
             TaskScheduler.UnobservedTaskException += TaskSchedulerOnUnobservedTaskException;
 
+            maxLogCount = maximumLogCount;
             getLogCount();
             if (autoGenerateIdentity) generateIdentity();
             startSynchronizationThread(syncFrequencyMillis, syncEndpointUrl);
@@ -165,10 +172,17 @@ namespace XFLog
         #region log persistence
         private void log(LogEvent logEvent)
         {
+            // truncate log if needed
+            var logCount= currentLogCount;
+            if (logCount > maxLogCount)
+                purgeLogs( (int)maxLogCount / 2);
+
+            // write log
             var index = incrementLogCount();
             var json = JsonConvert.SerializeObject(logEvent);
             Preferences.Set($"XFLog[{index}]", json);
         }
+        private static int maxLogCount;
         private static int currentLogCount;
         private static readonly object logLock = new object();
         private void getLogCount()
@@ -291,9 +305,11 @@ namespace XFLog
         {
             _syncFrequencyMillis = syncFrequencyMillis;
             _syncEndpointUrl = syncEndpointUrl;
-
-            Task.Factory.StartNew(synchronizeData,
-                CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+            if (!string.IsNullOrEmpty(syncEndpointUrl))
+            {
+                Task.Factory.StartNew(synchronizeData,
+                    CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+            }
         }
         private static int _syncFrequencyMillis;
         private static string _syncEndpointUrl;
